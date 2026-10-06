@@ -1,8 +1,12 @@
 # app.py
 from flask import Flask, jsonify, request
+import requests
 import data
 
 app = Flask(__name__)
+
+OFF_BASE_URL = "https://world.openfoodfacts.org"
+OFF_HEADERS = {"User-Agent": "InventoryLab/1.0 (student project)"}
 
 
 def find_item(item_id):
@@ -11,6 +15,16 @@ def find_item(item_id):
         if item["id"] == item_id:
             return item
     return None
+
+
+def clean_product(product):
+    """Pick out the fields we care about from an OpenFoodFacts product."""
+    return {
+        "barcode": product.get("code", ""),
+        "product_name": product.get("product_name", "Unknown"),
+        "brands": product.get("brands", ""),
+        "ingredients_text": product.get("ingredients_text", ""),
+    }
 
 
 @app.route("/inventory", methods=["GET"])
@@ -71,6 +85,42 @@ def delete_item(item_id):
 
     data.inventory.remove(item)
     return jsonify({"message": f"Item {item_id} deleted"}), 200
+
+
+@app.route("/lookup", methods=["GET"])
+def lookup_product():
+    barcode = request.args.get("barcode")
+    name = request.args.get("name")
+
+    if not barcode and not name:
+        return jsonify({"error": "Provide a barcode or name"}), 400
+
+    try:
+        if barcode:
+            url = f"{OFF_BASE_URL}/api/v2/product/{barcode}.json"
+            response = requests.get(url, headers=OFF_HEADERS, timeout=10)
+            response.raise_for_status()
+            result = response.json()
+            if result.get("status") != 1:
+                return jsonify({"error": "Product not found"}), 404
+            return jsonify(clean_product(result["product"])), 200
+
+        url = f"{OFF_BASE_URL}/cgi/search.pl"
+        params = {
+            "search_terms": name,
+            "search_simple": 1,
+            "json": 1,
+            "page_size": 1,
+        }
+        response = requests.get(url, params=params, headers=OFF_HEADERS, timeout=10)
+        response.raise_for_status()
+        products = response.json().get("products", [])
+        if not products:
+            return jsonify({"error": "Product not found"}), 404
+        return jsonify(clean_product(products[0])), 200
+
+    except requests.exceptions.RequestException:
+        return jsonify({"error": "Could not reach OpenFoodFacts"}), 502
 
 
 if __name__ == "__main__":
